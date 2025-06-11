@@ -361,7 +361,7 @@ class GPT(nn.Module):
         Implemented by predicting tokens one-by-one.
         """
 
-        print ("============= stepwise_forward_with_strongly_causal_attention ==============")
+        # print ("============= stepwise_forward_with_strongly_causal_attention ==============")
 
         batch_size = idx.size(0)
         L = idx.size(1)        
@@ -369,7 +369,7 @@ class GPT(nn.Module):
         all_logits = []
         for i in range(L):
 
-            print ("i=", i)
+            # print ("i=", i)
 
             # conditioned on
             idx_cond = idx[:, :i+1]
@@ -378,7 +378,7 @@ class GPT(nn.Module):
 
             # forward to get logits            
             att_scales_normalized = 1.0 + (att_scales - 1.0) / ATT_SCALE_ATTENUATION
-            print ("att_scales_normalized=", att_scales_normalized)
+            # print ("att_scales_normalized=", att_scales_normalized)
             logits, _ = self(idx_cond, att_scales=att_scales_normalized)
             logits = logits[:, -1, :]
             all_logits.append(logits)
@@ -389,7 +389,7 @@ class GPT(nn.Module):
             else:
                 p = probs.max(axis=1)
 
-            print ("p=", p)
+            # print ("p=", p)
 
             # s = torch.clamp(1.0 / p, max=3.0)
             s = 1.0/p
@@ -399,7 +399,7 @@ class GPT(nn.Module):
 
             att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest
 
-            print ("att_scales=", att_scales)
+            # print ("att_scales=", att_scales)
 
         all_logits = torch.cat([v.unsqueeze(1) for v in all_logits], dim=1)
         loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
@@ -415,9 +415,9 @@ class GPT(nn.Module):
         Implemented by running forward pass twice.
         """
 
-        print ("============= double_forward_with_strongly_causal_attention ==============")
+        # print ("============= double_forward_with_strongly_causal_attention ==============")
 
-        print (idx.shape, targets.shape)
+        # print (idx.shape, targets.shape)
 
         batch_size = idx.size(0)
         L = idx.size(1)        
