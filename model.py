@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+ATT_SCALE_ATTENUATION = 5e2
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -41,15 +43,20 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        # self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+
+        self.flash = False # strongly causal attention not supporting flash attention yet
+
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x):
+    def forward(self, x, att_scales=None):
+        
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -67,6 +74,15 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
+            if att_scales is not None:
+                # print ("att before = ", att.shape, att) # (B, nh, T, T)
+                # Each row of att corresponds to a query. Each column of att corresponds to a key.
+                # Therefore att_scales should be multiplied to columns (keys)
+                att *= att_scales.view(B, 1, 1, T)
+                #print ("att after = ", att.shape, att)
+                att /= att.sum(dim=-1, keepdim=True)
+                #print ("att normalized = ", att.shape, att)
+                
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -100,8 +116,9 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, att_scales=None):
+        
+        x = x + self.attn(self.ln_1(x), att_scales=att_scales)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -167,7 +184,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, att_scales=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -177,8 +194,10 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
+        # print (b, t)
+        # print ("x.shape=", x.shape)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, att_scales=att_scales)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -328,3 +347,108 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+    
+
+    
+
+    @torch.no_grad()
+    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None):
+        """
+        Forward pass with strongly causal attention: giving more attention weights
+        to tokens with lower predicted probability.
+        When targets is not None (eval mode), reweight by predicted prob of target token.
+        When targets is None (training mode), reweight by max prob of all tokens.
+        Implemented by predicting tokens one-by-one.
+        """
+
+        print ("============= stepwise_forward_with_strongly_causal_attention ==============")
+
+        batch_size = idx.size(0)
+        L = idx.size(1)        
+        att_scales = torch.ones((batch_size,1)).to(idx.device)
+        all_logits = []
+        for i in range(L):
+
+            print ("i=", i)
+
+            # conditioned on
+            idx_cond = idx[:, :i+1]
+            if idx_cond.size(1) > self.config.block_size:
+                idx_cond = idx_cond[:, -self.config.block_size:]
+
+            # forward to get logits            
+            att_scales_normalized = 1.0 + (att_scales - 1.0) / ATT_SCALE_ATTENUATION
+            print ("att_scales_normalized=", att_scales_normalized)
+            logits, _ = self(idx_cond, att_scales=att_scales_normalized)
+            logits = logits[:, -1, :]
+            all_logits.append(logits)
+            probs = F.softmax(logits, dim=-1)            
+
+            if targets is not None:                
+                p = probs.gather(1, targets[:,i].unsqueeze(1))
+            else:
+                p = probs.max(axis=1)
+
+            print ("p=", p)
+
+            # s = torch.clamp(1.0 / p, max=3.0)
+            s = 1.0/p
+            att_scales = torch.cat((att_scales, s), dim=1)
+
+            # print ("(raw) att_scales=", att_scales)
+
+            att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest
+
+            print ("att_scales=", att_scales)
+
+        all_logits = torch.cat([v.unsqueeze(1) for v in all_logits], dim=1)
+        loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
+        return all_logits, loss
+
+    @torch.no_grad()
+    def double_forward_with_strongly_causal_attention(self, idx, targets=None):
+        """
+        Forward pass with strongly causal attention: giving more attention weights
+        to tokens with lower predicted probability.
+        When targets is not None (eval mode), reweight by predicted prob of target token.
+        When targets is None (training mode), reweight by max prob of all tokens.
+        Implemented by running forward pass twice.
+        """
+
+        print ("============= double_forward_with_strongly_causal_attention ==============")
+
+        print (idx.shape, targets.shape)
+
+        batch_size = idx.size(0)
+        L = idx.size(1)        
+        att_scales = torch.ones((batch_size,1)).to(idx.device)
+
+        logits0, _ = self(idx, targets)
+        probs = F.softmax(logits0, dim=-1)
+
+        # print ("probs", probs.shape, probs)
+        # print ("targets", targets.shape, targets)
+
+        if targets is not None:
+            p = probs.gather(2, targets.unsqueeze(2))
+        else:
+            p = probs.max(axis=2)
+
+        # print ("p=", p)
+        att_scales = 1.0 / p
+
+        att_scales = att_scales[:,1:]
+        att_scales = torch.cat((att_scales.mean(dim=1, keepdim=True), att_scales), dim=1)
+
+        # print ("att_scales=", att_scales)
+
+         # forward to get logits        
+        att_scales_normalized = 1.0 + (att_scales - 1.0) / ATT_SCALE_ATTENUATION
+        # print ("att_scales_normalized=", att_scales_normalized)
+        logits, loss = self(idx, targets=targets, att_scales=att_scales_normalized)
+        return logits, loss
+        
+        
+
+
+
