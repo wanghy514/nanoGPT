@@ -1,3 +1,12 @@
+# Setup
+
+```
+git clone https://github.com/wanghy514/nanoGPT.git
+cd nanoGPT
+python3 -m venv ./gpt_venv
+source ./gpt_venv/bin/activate
+pip3 install torch numpy transformers datasets tiktoken wandb tqdm notebook matplotlib
+```
 
 # nanoGPT
 
