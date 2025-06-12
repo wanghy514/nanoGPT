@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-ATT_SCALE_ATTENUATION = 5e2
+
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -347,12 +347,9 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-    
-
-    
 
     @torch.no_grad()
-    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None):
+    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None, attenutation_factor=1e8):
         """
         Forward pass with strongly causal attention: giving more attention weights
         to tokens with lower predicted probability.
@@ -377,7 +374,7 @@ class GPT(nn.Module):
                 idx_cond = idx_cond[:, -self.config.block_size:]
 
             # forward to get logits            
-            att_scales_normalized = 1.0 + (att_scales - 1.0) / ATT_SCALE_ATTENUATION
+            att_scales_normalized = 1.0 + (att_scales - 1.0) / attenutation_factor
             # print ("att_scales_normalized=", att_scales_normalized)
             logits, _ = self(idx_cond, att_scales=att_scales_normalized)
             logits = logits[:, -1, :]
@@ -405,8 +402,9 @@ class GPT(nn.Module):
         loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
         return all_logits, loss
 
+
     @torch.no_grad()
-    def double_forward_with_strongly_causal_attention(self, idx, targets=None):
+    def double_forward_with_strongly_causal_attention(self, idx, targets=None, attenutation_factor=1e8):
         """
         Forward pass with strongly causal attention: giving more attention weights
         to tokens with lower predicted probability.
@@ -443,7 +441,7 @@ class GPT(nn.Module):
         # print ("att_scales=", att_scales)
 
          # forward to get logits        
-        att_scales_normalized = 1.0 + (att_scales - 1.0) / ATT_SCALE_ATTENUATION
+        att_scales_normalized = 1.0 + (att_scales - 1.0) / attenutation_factor
         # print ("att_scales_normalized=", att_scales_normalized)
         logits, loss = self(idx, targets=targets, att_scales=att_scales_normalized)
         return logits, loss

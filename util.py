@@ -47,3 +47,20 @@ def load_model(init_from, device, out_dir=None, compile=False):
         model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
     return model, checkpoint
+
+
+def estimate_loss_wrapper(model, ctx, data_dir, split, num_batches, batch_size, attenuation_factor, method, device, device_type):
+
+    model.eval()    
+    block_size = model.config.block_size
+    losses = torch.zeros(num_batches)
+    for k in range(num_batches):            
+        X, Y = get_batch(data_dir, split, block_size, batch_size, device_type, device)
+        with ctx:
+            if method == "double_forward":            
+                _, loss = model.double_forward_with_strongly_causal_attention(X, Y, attenuation_factor)
+            elif method == "stepwise_forward":
+                _, loss = model.stepwise_forward_with_strongly_causal_attention(X, Y, attenuation_factor)
+        losses[k] = loss.item()
+    return losses.mean()
+    
