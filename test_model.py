@@ -46,10 +46,14 @@ def test_forward_batching():
     test_forward_batching_helper(model.forward)
 
 def test_stepwise_forward_batching():
-    test_forward_batching_helper(model.stepwise_forward_with_strongly_causal_attention)
+    test_forward_batching_helper(
+        lambda x, y : model.stepwise_forward_with_strongly_causal_attention(x, y, attenuation_factor=2e3)
+    )
 
 def test_double_forward_batching():
-    test_forward_batching_helper(model.double_forward_with_strongly_causal_attention)
+    test_forward_batching_helper(
+        lambda x, y : model.double_forward_with_strongly_causal_attention(x, y, attenuation_factor=2e3)        
+    )
 
 
 if __name__ == "__main__":

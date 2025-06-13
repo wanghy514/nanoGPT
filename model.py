@@ -16,6 +16,20 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+def find_closest_match(att_mat, att_scales):
+
+    """
+    Find idx so that att_mat[idx, :, :].sum(dim=0) resembles att_scales
+    att_mat.shape = (nh, T, T)
+    att_scales = (T,)    
+    """
+    T = att_mat.size(-1)
+    similarities = torch.nn.functional.cosine_similarity(att_mat.sum(dim=1), att_scales.view(1, T))
+    idx = torch.argmax(similarities)
+    # print ("similarities=", similarities)
+    # print ("idx=", idx)
+    return idx.item()
+
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -43,6 +57,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.apply_sca_to_one_head = config.apply_sca_to_one_head
 
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         # self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -78,7 +93,15 @@ class CausalSelfAttention(nn.Module):
                 # print ("att before = ", att.shape, att) # (B, nh, T, T)
                 # Each row of att corresponds to a query. Each column of att corresponds to a key.
                 # Therefore att_scales should be multiplied to columns (keys)
-                att *= att_scales.view(B, 1, 1, T)
+                # print ("att_scales.shape=", att_scales.shape)
+                # print ("att.shape=", att.shape)
+                if self.apply_sca_to_one_head:
+                    # TODO get rid of the loop by torch.scatter
+                    for b in range(B):
+                        head_idx = find_closest_match(att[b,:,:,:], att_scales[b,:])
+                        att[b,head_idx,:,:] *= att_scales[b].view(1,T)
+                else:
+                    att *= att_scales.view(B, 1, 1, T)
                 #print ("att after = ", att.shape, att)
                 att /= att.sum(dim=-1, keepdim=True)
                 #print ("att normalized = ", att.shape, att)
@@ -131,6 +154,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    apply_sca_to_one_head: bool = True  # Apply strongly causal attention to one head or all heads
 
 class GPT(nn.Module):
 
@@ -349,7 +373,7 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None, attenutation_factor=1e8):
+    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None, attenuation_factor=1e8):
         """
         Forward pass with strongly causal attention: giving more attention weights
         to tokens with lower predicted probability.
@@ -374,7 +398,7 @@ class GPT(nn.Module):
                 idx_cond = idx_cond[:, -self.config.block_size:]
 
             # forward to get logits            
-            att_scales_normalized = 1.0 + (att_scales - 1.0) / attenutation_factor
+            att_scales_normalized = 1.0 + (att_scales - 1.0) / attenuation_factor
             # print ("att_scales_normalized=", att_scales_normalized)
             logits, _ = self(idx_cond, att_scales=att_scales_normalized)
             logits = logits[:, -1, :]
@@ -404,7 +428,7 @@ class GPT(nn.Module):
 
 
     @torch.no_grad()
-    def double_forward_with_strongly_causal_attention(self, idx, targets=None, attenutation_factor=1e8):
+    def double_forward_with_strongly_causal_attention(self, idx, targets=None, attenuation_factor=1e8):
         """
         Forward pass with strongly causal attention: giving more attention weights
         to tokens with lower predicted probability.
@@ -441,7 +465,7 @@ class GPT(nn.Module):
         # print ("att_scales=", att_scales)
 
          # forward to get logits        
-        att_scales_normalized = 1.0 + (att_scales - 1.0) / attenutation_factor
+        att_scales_normalized = 1.0 + (att_scales - 1.0) / attenuation_factor
         # print ("att_scales_normalized=", att_scales_normalized)
         logits, loss = self(idx, targets=targets, att_scales=att_scales_normalized)
         return logits, loss
