@@ -15,20 +15,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-
-def find_closest_match(att_mat, att_scales):
-
-    """
-    Find idx so that att_mat[idx, :, :].sum(dim=0) resembles att_scales
-    att_mat.shape = (nh, T, T)
-    att_scales = (T,)    
-    """
-    T = att_mat.size(-1)
-    similarities = torch.nn.functional.cosine_similarity(att_mat.sum(dim=1), att_scales.view(1, T))
-    idx = torch.argmax(similarities)
-    # print ("similarities=", similarities)
-    # print ("idx=", idx)
-    return idx.item()
+from model_util import batch_apply_att_scaling
 
 
 class LayerNorm(nn.Module):
@@ -90,22 +77,7 @@ class CausalSelfAttention(nn.Module):
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             if att_scales is not None:
-                # print ("att before = ", att.shape, att) # (B, nh, T, T)
-                # Each row of att corresponds to a query. Each column of att corresponds to a key.
-                # Therefore att_scales should be multiplied to columns (keys)
-                # print ("att_scales.shape=", att_scales.shape)
-                # print ("att.shape=", att.shape)
-                if self.apply_sca_to_one_head:
-                    # TODO get rid of the loop by torch.scatter
-                    for b in range(B):
-                        head_idx = find_closest_match(att[b,:,:,:], att_scales[b,:])
-                        att[b,head_idx,:,:] *= att_scales[b].view(1,T)
-                else:
-                    att *= att_scales.view(B, 1, 1, T)
-                #print ("att after = ", att.shape, att)
-                att /= att.sum(dim=-1, keepdim=True)
-                #print ("att normalized = ", att.shape, att)
-                
+                att = batch_apply_att_scaling(att, att_scales.view(B, T), self.apply_sca_to_one_head)                
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side

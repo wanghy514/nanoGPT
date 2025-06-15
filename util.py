@@ -4,6 +4,7 @@ import numpy as np
 
 from model import GPT, GPTConfig
 
+
 def get_batch(data_dir, split, block_size, batch_size, device_type, device):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
