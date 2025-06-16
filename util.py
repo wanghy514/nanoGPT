@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+from time import time
 
 from model import GPT, GPTConfig
 
@@ -52,6 +53,7 @@ def load_model(init_from, device, out_dir=None, compile=False):
 
 def estimate_loss_wrapper(model, ctx, data_dir, split, num_batches, batch_size, attenuation_factor, method, device, device_type):
 
+    tic = time()
     model.eval()    
     block_size = model.config.block_size
     losses = torch.zeros(num_batches)
@@ -63,5 +65,6 @@ def estimate_loss_wrapper(model, ctx, data_dir, split, num_batches, batch_size, 
             elif method == "stepwise_forward":
                 _, loss = model.stepwise_forward_with_strongly_causal_attention(X, Y, attenuation_factor)
         losses[k] = loss.item()
+    print ("Evaluted %d batches with size %d, elappsed time= %.2f seconds" % (num_batches, batch_size, time()-tic))
     return losses.mean()
     
