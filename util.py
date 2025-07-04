@@ -6,14 +6,16 @@ from time import time
 from model import GPT, GPTConfig
 
 
-def get_batch(data_dir, split, block_size, batch_size, device_type, device):
+def get_batch(data_dir, split, block_size, batch_size, device_type, device, data=None, ix=None):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
-    if split == 'train':
-        data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    else:
-        data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    if data is None:
+        if split == 'train':
+            data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        else:
+            data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    if ix is None:
+        ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -51,14 +53,14 @@ def load_model(init_from, device, out_dir=None, compile=False):
     return model, checkpoint
 
 
-def estimate_loss_wrapper(model, ctx, data_dir, split, num_batches, batch_size, attenuation_factor, method, device, device_type):
+def estimate_loss_wrapper(model, ctx, data, data_indices, num_batches, batch_size, attenuation_factor, method, device, device_type):
 
     tic = time()
     model.eval()    
     block_size = model.config.block_size
     losses = torch.zeros(num_batches)
     for k in range(num_batches):            
-        X, Y = get_batch(data_dir, split, block_size, batch_size, device_type, device)
+        X, Y = get_batch(None, None, block_size, batch_size, device_type, device, data=data, ix=data_indices[k])
         with ctx:
             if method == "double_forward":            
                 _, loss = model.double_forward_with_strongly_causal_attention(X, Y, attenuation_factor)

@@ -390,7 +390,7 @@ class GPT(nn.Module):
 
             # print ("(raw) att_scales=", att_scales)
 
-            att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest
+            att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest (why?)
 
             # print ("att_scales=", att_scales)
 
@@ -413,10 +413,11 @@ class GPT(nn.Module):
 
         # print (idx.shape, targets.shape)
 
-        batch_size = idx.size(0)
-        L = idx.size(1)        
-        att_scales = torch.ones((batch_size,1)).to(idx.device)
+        # batch_size = idx.size(0)
+        # L = idx.size(1)        
+        # att_scales = torch.ones((batch_size,1)).to(idx.device)
 
+        # First forward pass
         logits0, _ = self(idx, targets)
         probs = F.softmax(logits0, dim=-1)
 
@@ -431,12 +432,14 @@ class GPT(nn.Module):
         # print ("p=", p)
         att_scales = 1.0 / p
 
-        att_scales = att_scales[:,1:]
+        # Predicted prob at pos i (predicting pos i+1) should be used to rescale attention on pos i+1,
+        # so we have to shift the arrray to the right by concatenating 1 element at the leftmost pos
+        att_scales = att_scales[:,:-1]
         att_scales = torch.cat((att_scales.mean(dim=1, keepdim=True), att_scales), dim=1)
 
         # print ("att_scales=", att_scales)
 
-         # forward to get logits        
+         # Second forward pass with attention rescaled
         att_scales_normalized = 1.0 + (att_scales - 1.0) / attenuation_factor
         # print ("att_scales_normalized=", att_scales_normalized)
         logits, loss = self(idx, targets=targets, att_scales=att_scales_normalized)

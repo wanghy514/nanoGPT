@@ -13,8 +13,14 @@ from util import load_model, estimate_loss_wrapper
 
 # -----------------------------------------------------------------------------
 init_from = 'gpt2' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
-out_dir = None # "out-shakespeare-char"
-dataset = ['shakespeare_char', 'openwebtext'][1]
+out_dir = None
+dataset = 'openwebtext'
+
+# Fast setting
+# init_from = 'resume'
+# out_dir = "out-shakespeare-char"
+# dataset = 'shakespeare_char'
+
 seed = 1337
 device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
@@ -35,23 +41,8 @@ block_size = model.config.block_size
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
 
-# model.config.apply_sca_to_one_head = apply_sca_to_one_head
-# l = estimate_loss_wrapper(
-#     model,
-#     ctx,
-#     data_dir = data_dir,
-#     split = 'val',
-#     num_batches = num_batches,
-#     batch_size = batch_size,
-#     attenuation_factor = 1e10,
-#     method = method,
-#     device = device,
-#     device_type = device_type,
-# )
-# print ('l=', l)
-
 ##### Choices #########
-method_choices = ["double_forward"] #, "stepwise_forward"]
+method_choices = ["double_forward", "stepwise_forward"][:1]
 apply_sca_to_one_head_choices = [True, False]
 attenution_factors = []
 for e in range(1, 11):
@@ -63,6 +54,9 @@ batch_size = 8
 
 val_losses = {}
 
+data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+data_indices = [torch.randint(len(data) - block_size, (batch_size,)) for _ in range(num_batches)]
+
 for method in method_choices:
     for apply_sca_to_one_head in apply_sca_to_one_head_choices:
         key = f"using {method}, apply_sca_to_one_head={apply_sca_to_one_head}"
@@ -72,8 +66,8 @@ for method in method_choices:
             l = estimate_loss_wrapper(
                 model,
                 ctx,
-                data_dir = data_dir,
-                split = 'val',
+                data = data,            
+                data_indices = data_indices,
                 num_batches = num_batches,
                 batch_size = batch_size,
                 attenuation_factor = f,
