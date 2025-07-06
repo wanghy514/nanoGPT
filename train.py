@@ -56,7 +56,7 @@ n_head = 12
 n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
-use_ar = False
+use_ar = True
 ar_head_choice = "FIRST"
 ar_attenuation = 1e6
 ############################################
@@ -136,8 +136,21 @@ if os.path.exists(meta_path):
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+model_args = dict(
+    n_layer=n_layer, 
+    n_head=n_head, 
+    n_embd=n_embd, 
+    block_size=block_size,
+    bias=bias, 
+    vocab_size=None,
+    dropout=dropout,
+    use_ar=use_ar,
+    ar_head_choice=ar_head_choice,
+    ar_attenuation=ar_attenuation,
+
+) # start with model_args from command line
+
+
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -237,6 +250,10 @@ def get_lr(it):
 if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+
+print ("================================================")
+print ("model.config=", model.config)
+print ("================================================")
 
 # training loop
 X, Y = get_batch(data_dir, 'train', block_size, batch_size, device_type, device)

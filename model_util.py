@@ -97,16 +97,18 @@ def batch_apply_att_scaling(att: torch.Tensor, att_scales: torch.Tensor, ar_head
             index=torch.tile(head_indices.view(B,1,1,1), dims=(1,1,1,T)),
             src=att_scales.view(B,1,1,T)
         )
-        att *= att_scales_scattered      
-    elif ar_head_choice == "FIRST":
-        att[:,0,:,:] *= att_scales.view(B, 1, T)
+        rescaled_att = att * att_scales_scattered      
+    elif ar_head_choice == "FIRST":        
+        att_scales_scattered = torch.cat(
+            [att_scales.view(B, 1, 1, T), torch.ones((B, nh-1, 1, T))],
+            dim=1
+        )
+        rescaled_att = att * att_scales_scattered
     elif ar_head_choice == "ALL":
-        att *= att_scales.view(B, 1, 1, T)
+        rescaled_att = att * att_scales.view(B, 1, 1, T)
     else:
         raise ValueError
     
-    #print ("att after = ", att.shape, att)
-    att /= att.sum(dim=-1, keepdim=True)
-    #print ("att normalized = ", att.shape, att)
+    renormalized_att = rescaled_att / rescaled_att.sum(dim=-1, keepdim=True)        
 
-    return att
+    return renormalized_att

@@ -431,34 +431,37 @@ class GPT(nn.Module):
         # batch_size = idx.size(0)
         # L = idx.size(1)        
         # att_scales = torch.ones((batch_size,1)).to(idx.device)
+        
 
-        # First forward pass
-        logits0, _ = self.single_forward(idx, targets)
-        logits0 = logits0.detach()
+        if False:
+            # First forward pass
+            with torch.no_grad():
+                logits0, _ = self.single_forward(idx, targets)        
 
-        probs = F.softmax(logits0, dim=-1)
+            probs = F.softmax(logits0, dim=-1)
 
-        # print ("probs", probs.shape, probs)
-        # print ("targets", targets.shape, targets)
+            # print ("probs", probs.shape, probs)
+            # print ("targets", targets.shape, targets)
 
-        if targets is not None:
-            p = probs.gather(2, targets.unsqueeze(2))
+            if targets is not None:
+                p = probs.gather(2, targets.unsqueeze(2))
+            else:
+                p = probs.max(axis=2)
+
+            # print ("p=", p)
+            att_scales = 1.0 / p
+
+            # Predicted prob at pos i (predicting pos i+1) should be used to rescale attention on pos i+1,
+            # so we have to shift the arrray to the right by concatenating 1 element at the leftmost pos
+            att_scales = att_scales[:,:-1]
+            att_scales = torch.cat((att_scales.mean(dim=1, keepdim=True), att_scales), dim=1)
+            att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
+        # print ("idx=", idx.shape)
+        # print ("att_scales=", att_scales.shape)
         else:
-            p = probs.max(axis=2)
-
-        # print ("p=", p)
-        att_scales = 1.0 / p
-
-        # Predicted prob at pos i (predicting pos i+1) should be used to rescale attention on pos i+1,
-        # so we have to shift the arrray to the right by concatenating 1 element at the leftmost pos
-        att_scales = att_scales[:,:-1]
-        att_scales = torch.cat((att_scales.mean(dim=1, keepdim=True), att_scales), dim=1)
-
-        # print ("att_scales=", att_scales)
+            att_scales_normalized = torch.rand((idx.shape[0], idx.shape[1], 1))
 
          # Second forward pass with attention rescaled
-        att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
-        # print ("att_scales_normalized=", att_scales_normalized)
         logits, loss = self.single_forward(idx, targets=targets, att_scales=att_scales_normalized)
         return logits, loss
         
