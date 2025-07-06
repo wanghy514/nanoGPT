@@ -43,13 +43,13 @@ data_dir = os.path.join('data', dataset)
 
 ##### Choices #########
 method_choices = ["double_forward", "stepwise_forward"][:1]
-apply_sca_to_one_head_choices = [True, False]
+ar_head_choices = ["ALL", "CLOSEST", "FIRST"]
 attenution_factors = []
-for e in range(1, 11):
+for e in range(2, 10):
     attenution_factors.extend([10**e, 2 * 10**e, 5 * 10 ** e])
 #######################
 
-num_batches = 10
+num_batches = 5
 batch_size = 8
 
 val_losses = {}
@@ -58,8 +58,8 @@ data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 data_indices = [torch.randint(len(data) - block_size, (batch_size,)) for _ in range(num_batches)]
 
 for method in method_choices:
-    for apply_sca_to_one_head in apply_sca_to_one_head_choices:
-        key = f"using {method}, apply_sca_to_one_head={apply_sca_to_one_head}"
+    for ar_head_choice in ar_head_choices:
+        key = f"using {method}, ar_head_choice={ar_head_choice}"
         val_losses[key] = []
         for f in attenution_factors:
             print (f"{key}, evaluting attenuation_factor={f}")
@@ -71,13 +71,13 @@ for method in method_choices:
                 num_batches = num_batches,
                 batch_size = batch_size,
                 attenuation_factor = f,
+                ar_head_choice = ar_head_choice,
                 method = method,
                 device = device,
                 device_type = device_type,
             )
             val_losses[key].append(l.item())            
 
-import pickle
 with open("./results.pkl", "wb") as fp:
     pickle.dump((attenution_factors, val_losses), fp)
 

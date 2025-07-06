@@ -49,9 +49,9 @@ def test_batch_apply_att_scaling():
 
     indices = batch_find_closest_match(att_mat, att_scales)
 
-    for apply_sca_to_one_head in [False, True]:
-        att_mat0 = apply_att_scaling(att_mat.clone(), att_scales, apply_sca_to_one_head)
-        att_mat1 = batch_apply_att_scaling(att_mat.clone(), att_scales, apply_sca_to_one_head)    
+    for ar_head_choice in ["ALL", "FIRST", "CLOSEST"]:
+        att_mat0 = apply_att_scaling(att_mat.clone(), att_scales, ar_head_choice)
+        att_mat1 = batch_apply_att_scaling(att_mat.clone(), att_scales, ar_head_choice)    
         err = torch.abs(att_mat0 - att_mat1).max()
         assert err == 0
             

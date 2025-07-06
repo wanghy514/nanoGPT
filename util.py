@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 from time import time
-
+from dataclasses import replace
 from model import GPT, GPTConfig
 
 
@@ -53,7 +53,13 @@ def load_model(init_from, device, out_dir=None, compile=False):
     return model, checkpoint
 
 
-def estimate_loss_wrapper(model, ctx, data, data_indices, num_batches, batch_size, attenuation_factor, method, device, device_type):
+def estimate_loss_wrapper(model, ctx, data, data_indices, num_batches, batch_size, attenuation_factor, ar_head_choice, method, device, device_type):
+    
+    model.config = replace(
+        model.config, 
+        ar_attenuation=attenuation_factor,
+        ar_head_choice=ar_head_choice,
+    )
 
     tic = time()
     model.eval()    
@@ -63,9 +69,9 @@ def estimate_loss_wrapper(model, ctx, data, data_indices, num_batches, batch_siz
         X, Y = get_batch(None, None, block_size, batch_size, device_type, device, data=data, ix=data_indices[k])
         with ctx:
             if method == "double_forward":            
-                _, loss = model.double_forward_with_strongly_causal_attention(X, Y, attenuation_factor)
+                _, loss = model.double_forward_with_attention_rescaling(X, Y)
             elif method == "stepwise_forward":
-                _, loss = model.stepwise_forward_with_strongly_causal_attention(X, Y, attenuation_factor)
+                _, loss = model.stepwise_forward_with_attention_rescaling(X, Y)
         losses[k] = loss.item()
     print ("Evaluted %d batches with size %d, elappsed time= %.2f seconds" % (num_batches, batch_size, time()-tic))
     return losses.mean()

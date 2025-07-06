@@ -7,6 +7,7 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 
+from enum import Enum
 import math
 import inspect
 from dataclasses import dataclass
@@ -15,7 +16,10 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from model_util import batch_apply_att_scaling
+from model_util import (
+    ARHeadChoice,
+    batch_apply_att_scaling,
+)
 
 
 class LayerNorm(nn.Module):
@@ -44,12 +48,11 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.apply_sca_to_one_head = config.apply_sca_to_one_head
 
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         # self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
-        self.flash = False # strongly causal attention not supporting flash attention yet
+        self.flash = False # attention rescaling not supporting flash attention yet
 
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -57,7 +60,7 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x, att_scales=None):
+    def forward(self, x, att_scales=None, ar_head_choice: ARHeadChoice="ALL"):
         
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -77,7 +80,7 @@ class CausalSelfAttention(nn.Module):
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             if att_scales is not None:
-                att = batch_apply_att_scaling(att, att_scales.view(B, T), self.apply_sca_to_one_head)                
+                att = batch_apply_att_scaling(att, att_scales.view(B, T), ar_head_choice)                
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -111,11 +114,12 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x, att_scales=None):
+    def forward(self, x, att_scales=None, ar_head_choice: ARHeadChoice="ALL"):
         
-        x = x + self.attn(self.ln_1(x), att_scales=att_scales)
+        x = x + self.attn(self.ln_1(x), att_scales=att_scales, ar_head_choice=ar_head_choice)
         x = x + self.mlp(self.ln_2(x))
         return x
+
 
 @dataclass
 class GPTConfig:
@@ -126,7 +130,11 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    apply_sca_to_one_head: bool = True  # Apply strongly causal attention to one head or all heads
+
+    # use attention rescaling (AR)
+    use_ar: bool = False
+    ar_head_choice: ARHeadChoice = "FIRST"
+    ar_attenuation: float = 1e6
 
 class GPT(nn.Module):
 
@@ -180,7 +188,15 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None, att_scales=None):
+    def forward(self, idx, targets=None):
+
+        if not self.config.use_ar:
+            return self.single_forward(idx, targets)   
+        else:
+            return self.double_forward_with_attention_rescaling(idx, targets)
+
+
+    def single_forward(self, idx, targets=None, att_scales=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -193,7 +209,7 @@ class GPT(nn.Module):
         # print (b, t)
         # print ("x.shape=", x.shape)
         for block in self.transformer.h:
-            x = block(x, att_scales=att_scales)
+            x = block(x, att_scales=att_scales, ar_head_choice=self.config.ar_head_choice)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -345,16 +361,16 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def stepwise_forward_with_strongly_causal_attention(self, idx, targets=None, attenuation_factor=1e8):
+    def stepwise_forward_with_attention_rescaling(self, idx, targets=None):
         """
-        Forward pass with strongly causal attention: giving more attention weights
+        Forward pass with attention rescaling: giving more attention weights
         to tokens with lower predicted probability.
         When targets is not None (eval mode), reweight by predicted prob of target token.
         When targets is None (training mode), reweight by max prob of all tokens.
         Implemented by predicting tokens one-by-one.
         """
 
-        # print ("============= stepwise_forward_with_strongly_causal_attention ==============")
+        # print ("============= stepwise_forward_with_attention_rescaling ==============")
 
         batch_size = idx.size(0)
         L = idx.size(1)        
@@ -370,9 +386,9 @@ class GPT(nn.Module):
                 idx_cond = idx_cond[:, -self.config.block_size:]
 
             # forward to get logits            
-            att_scales_normalized = 1.0 + (att_scales - 1.0) / attenuation_factor
+            att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
             # print ("att_scales_normalized=", att_scales_normalized)
-            logits, _ = self(idx_cond, att_scales=att_scales_normalized)
+            logits, _ = self.single_forward(idx_cond, att_scales=att_scales_normalized)
             logits = logits[:, -1, :]
             all_logits.append(logits)
             probs = F.softmax(logits, dim=-1)            
@@ -398,18 +414,17 @@ class GPT(nn.Module):
         loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
         return all_logits, loss
 
-
-    @torch.no_grad()
-    def double_forward_with_strongly_causal_attention(self, idx, targets=None, attenuation_factor=1e8):
+    
+    def double_forward_with_attention_rescaling(self, idx, targets=None):
         """
-        Forward pass with strongly causal attention: giving more attention weights
+        Forward pass with attention rescaling: giving more attention weights
         to tokens with lower predicted probability.
         When targets is not None (eval mode), reweight by predicted prob of target token.
         When targets is None (training mode), reweight by max prob of all tokens.
         Implemented by running forward pass twice.
         """
 
-        # print ("============= double_forward_with_strongly_causal_attention ==============")
+        # print ("============= double_forward_with_attention_rescaling ==============")
 
         # print (idx.shape, targets.shape)
 
@@ -418,7 +433,9 @@ class GPT(nn.Module):
         # att_scales = torch.ones((batch_size,1)).to(idx.device)
 
         # First forward pass
-        logits0, _ = self(idx, targets)
+        logits0, _ = self.single_forward(idx, targets)
+        logits0 = logits0.detach()
+
         probs = F.softmax(logits0, dim=-1)
 
         # print ("probs", probs.shape, probs)
@@ -440,9 +457,9 @@ class GPT(nn.Module):
         # print ("att_scales=", att_scales)
 
          # Second forward pass with attention rescaled
-        att_scales_normalized = 1.0 + (att_scales - 1.0) / attenuation_factor
+        att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
         # print ("att_scales_normalized=", att_scales_normalized)
-        logits, loss = self(idx, targets=targets, att_scales=att_scales_normalized)
+        logits, loss = self.single_forward(idx, targets=targets, att_scales=att_scales_normalized)
         return logits, loss
         
         

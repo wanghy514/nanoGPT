@@ -2,6 +2,7 @@ import os
 import torch
 from contextlib import nullcontext
 # from model import GPT, GPTConfig
+from dataclasses import replace
 from util import get_batch, load_model
 
 # -----------------------------------------------------------------------------
@@ -29,6 +30,11 @@ batch_size = 4
 
 model, checkpoint = load_model("resume", device, out_dir=out_dir, compile=False)
 
+model.config = replace(
+    model.config, 
+    use_ar = True,    
+    ar_attenuation = 2e3,
+)
 
 def test_forward_batching_helper(fwd_func):
     X, Y = get_batch(data_dir, "val", block_size, batch_size, device_type, device)
@@ -47,12 +53,12 @@ def test_forward_batching():
 
 def test_stepwise_forward_batching():
     test_forward_batching_helper(
-        lambda x, y : model.stepwise_forward_with_strongly_causal_attention(x, y, attenuation_factor=2e3)
+        lambda x, y : model.stepwise_forward_with_attention_rescaling(x, y)
     )
 
 def test_double_forward_batching():
     test_forward_batching_helper(
-        lambda x, y : model.double_forward_with_strongly_causal_attention(x, y, attenuation_factor=2e3)        
+        lambda x, y : model.double_forward_with_attention_rescaling(x, y)
     )
 
 
