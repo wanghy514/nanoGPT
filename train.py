@@ -58,7 +58,7 @@ dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 use_ar = True
 ar_head_choice = "FIRST"
-ar_attenuation = 1e6
+ar_attenuation = 1e5
 ############################################
 
 # adamw optimizer
