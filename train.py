@@ -57,7 +57,7 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 use_ar = True
-ar_head_choice = "FIRST"
+ar_head_choice = "ALL"
 ar_attenuation = 1e5
 ############################################
 
@@ -225,17 +225,25 @@ if ddp:
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
-def estimate_loss():
+def estimate_stats():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
+        losses = torch.zeros(eval_iters)        
+        rescaling = []
         for k in range(eval_iters):            
             X, Y = get_batch(data_dir, split, block_size, batch_size, device_type, device)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+            rescaling.append(model.att_scales_normalized.clone())
+        out[split + '/loss'] = losses.mean()
+        rescaling = torch.stack(rescaling).flatten()
+        percentages = [0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999, 1.0]
+        quantiles = torch.quantile(rescaling, torch.tensor(percentages))
+        for p, q in zip(percentages, quantiles):
+            out[split + f'/att_scale_quantile_{p}'] = q.item()
+
     model.train()
     return out
 
@@ -277,20 +285,20 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        current_step_log_info = {
-            "iter": iter_num,
-            "train/loss": losses['train'],
-            "val/loss": losses['val'],
+        stats = estimate_stats()
+        print(f"step {iter_num}: train loss {stats['train/loss']:.4f}, val loss {stats['val/loss']:.4f}")
+        current_step_log_info = stats
+        current_step_log_info.update({
+            "iter": iter_num,            
             "lr": lr,
             "mfu": running_mfu*100, # convert to percentage
-        }
+        })
+
         write_logs(current_step_log_info)
         if wandb_log:
             wandb.log(current_step_log_info)
-        if losses['val'] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses['val']
+        if stats['val/loss'] < best_val_loss or always_save_checkpoint:
+            best_val_loss = stats['val/loss']
             if iter_num > 0:
                 checkpoint = {
                     'model': raw_model.state_dict(),

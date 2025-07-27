@@ -360,59 +360,59 @@ class GPT(nn.Module):
 
         return idx
 
-    @torch.no_grad()
-    def stepwise_forward_with_attention_rescaling(self, idx, targets=None):
-        """
-        Forward pass with attention rescaling: giving more attention weights
-        to tokens with lower predicted probability.
-        When targets is not None (eval mode), reweight by predicted prob of target token.
-        When targets is None (training mode), reweight by max prob of all tokens.
-        Implemented by predicting tokens one-by-one.
-        """
+    # @torch.no_grad()
+    # def stepwise_forward_with_attention_rescaling(self, idx, targets=None):
+    #     """
+    #     Forward pass with attention rescaling: giving more attention weights
+    #     to tokens with lower predicted probability.
+    #     When targets is not None (eval mode), reweight by predicted prob of target token.
+    #     When targets is None (training mode), reweight by max prob of all tokens.
+    #     Implemented by predicting tokens one-by-one.
+    #     """
 
-        # print ("============= stepwise_forward_with_attention_rescaling ==============")
+    #     # print ("============= stepwise_forward_with_attention_rescaling ==============")
 
-        batch_size = idx.size(0)
-        L = idx.size(1)        
-        att_scales = torch.ones((batch_size,1)).to(idx.device)
-        all_logits = []
-        for i in range(L):
+    #     batch_size = idx.size(0)
+    #     L = idx.size(1)        
+    #     att_scales = torch.ones((batch_size,1)).to(idx.device)
+    #     all_logits = []
+    #     for i in range(L):
 
-            # print ("i=", i)
+    #         # print ("i=", i)
 
-            # conditioned on
-            idx_cond = idx[:, :i+1]
-            if idx_cond.size(1) > self.config.block_size:
-                idx_cond = idx_cond[:, -self.config.block_size:]
+    #         # conditioned on
+    #         idx_cond = idx[:, :i+1]
+    #         if idx_cond.size(1) > self.config.block_size:
+    #             idx_cond = idx_cond[:, -self.config.block_size:]
 
-            # forward to get logits            
-            att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
-            # print ("att_scales_normalized=", att_scales_normalized)
-            logits, _ = self.single_forward(idx_cond, att_scales=att_scales_normalized)
-            logits = logits[:, -1, :]
-            all_logits.append(logits)
-            probs = F.softmax(logits, dim=-1)            
+    #         # forward to get logits            
+    #         att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
+    #         # print ("att_scales_normalized=", att_scales_normalized)
+    #         logits, _ = self.single_forward(idx_cond, att_scales=att_scales_normalized)
+    #         logits = logits[:, -1, :]
+    #         all_logits.append(logits)
+    #         probs = F.softmax(logits, dim=-1)            
 
-            if targets is not None:                
-                p = probs.gather(1, targets[:,i].unsqueeze(1))
-            else:
-                p = probs.max(axis=1)
+    #         if targets is not None:                
+    #             p = probs.gather(1, targets[:,i].unsqueeze(1))
+    #         else:
+    #             p = probs.max(axis=1)
 
-            # print ("p=", p)
+    #         # print ("p=", p)
 
-            # s = torch.clamp(1.0 / p, max=3.0)
-            s = 1.0/p
-            att_scales = torch.cat((att_scales, s), dim=1)
+    #         # s = torch.clamp(1.0 / p, max=3.0)
+    #         s = 1.0/p
+    #         att_scales = torch.cat((att_scales, s), dim=1)
 
-            # print ("(raw) att_scales=", att_scales)
+    #         # print ("(raw) att_scales=", att_scales)
 
-            att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest (why?)
+    #         att_scales[:,0] = att_scales[:,1:].mean(dim=-1) # set the first one to be average of the rest (why?)
 
-            # print ("att_scales=", att_scales)
+    #         # print ("att_scales=", att_scales)
 
-        all_logits = torch.cat([v.unsqueeze(1) for v in all_logits], dim=1)
-        loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
-        return all_logits, loss
+    #     all_logits = torch.cat([v.unsqueeze(1) for v in all_logits], dim=1)
+    #     loss = F.cross_entropy(all_logits.view(-1, all_logits.size(-1)), targets.view(-1), ignore_index=-1)
+    #     return all_logits, loss
 
     
     def double_forward_with_attention_rescaling(self, idx, targets=None):
@@ -453,13 +453,13 @@ class GPT(nn.Module):
         # so we have to shift the arrray to the right by concatenating 1 element at the leftmost pos
         att_scales = att_scales[:,:-1]
         att_scales = torch.cat((att_scales.mean(dim=1, keepdim=True), att_scales), dim=1)
-        att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
+        self.att_scales_normalized = 1.0 + (att_scales - 1.0) / self.config.ar_attenuation
         # print ("idx=", idx.shape)
         # print ("att_scales=", att_scales.shape)
         
 
          # Second forward pass with attention rescaled
-        logits, loss = self.single_forward(idx, targets=targets, att_scales=att_scales_normalized)
+        logits, loss = self.single_forward(idx, targets=targets, att_scales=self.att_scales_normalized)
         return logits, loss
         
         
